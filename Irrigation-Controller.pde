@@ -101,7 +101,7 @@ int rotary = 1;      //  Stores the current rotary dial position
 int rotaryLast = 1;  //  Stores the last rotary dial position
 
 byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;  // Real Time Clock
-//int second=0, minute=1, hour=1, dayOfWeek=7, dayOfMonth, month, year; // uncomment when speeding up time (testing)
+//int second=0, minute=1, hour=1, dayOfWeek=7, dayOfMonth, month, year; // uncomment when speeding up time (see loop())
 
 static unsigned long relay_timer = 0;           //  Measures the amount of time the pump is on
 static unsigned long pressure_timer = 0;        //  Creates a delay before measuring pressure switch state
@@ -110,13 +110,13 @@ static unsigned long lWaitMillis;               //  Handle millis() rollover for
 static unsigned long blink_timer[] = {0,1};     //  Handle time/temp display timing and colon blinking
 
 int valve_timer_act = 0; //  Makes sure valve_timer is only set once
-int rain;                //  Stores the rain sensor value
 int timer;               //  Identifies which schedule is currently running the pump
 int counttimes;          //  Counts up to schedule.timesperday for schedule creating
 int tempF;               //  Holds temerature in Fahrenheit
 int tempOK;              //  Stores whether it is too cold or will be too cold in the near future
 int tempHistS;           //  Selects which temperature in history to display when on menu 8
 int menu[] = { 8, 1 };   //  Determines display and menu navigation
+int rain;                //  Stores rain sensor value
 
 struct config_t         // Variables read/written to EEPROM
 {
@@ -124,19 +124,19 @@ struct config_t         // Variables read/written to EEPROM
     int pumpOR;           //  Pump Override: supersedes onoff variable, on (true) or off (false)
     int valveOR;          //  Valve Override: supersedes onoff variable, on (true) or off (false)
     int numofschedules;   //  Run schedules 1 (=1), 1 and 2 (=2), or 1 and 2 and 3 (=3)
-    int seconds1TOwater;  //  How many seconds to run the pump for schedule 1,2,3
+    int seconds1TOwater;  //  How many seconds to run the pump for schedule 1,2,3...
     int seconds2TOwater;
     int seconds3TOwater;
-    int time1hour;        //  Start hour (24 hour format)
+    int time1hour;        //  Start hour (24 hour format)...
     int time2hour;
     int time3hour;
-    int time1minute;      //  Start minute
+    int time1minute;      //  Start minute...
     int time2minute;
     int time3minute;
-    int days1TOwater;     //  Days between watering
+    int days1TOwater;     //  Days between watering...
     int days2TOwater;
     int days3TOwater;
-    int nextday1TOwater;  //  Which day of the week to initially start watering (1=Mon...7=Sun)
+    int nextday1TOwater;  //  Which day of the week to initially start watering (1=Mon...7=Sun)...
     int nextday2TOwater; 
     int nextday3TOwater;
     int pumptrigger;      //  Determines if a timer has switched the pump on (true) or off (false)
@@ -152,6 +152,15 @@ byte bcdToDec(byte val) {  // Convert binary coded decimal to normal decimal num
     return ((val / 16 * 10) + (val%16));
 }
 
+void rainSense() { //  Produces average of 6 readings from the rain sensor (n=number of trials to derive stat):
+	rain = 0;      //  When dry: between 446 and 550 (n=314), When wet: between 1013 and 1023 (n=338)
+    for (int j = 1; j < 7; j++) {
+        rain += (int)analogRead(RainPIN); 
+        delay(25);
+    }
+    rain = rain / 6;
+}
+
 int avgTemp(int t) {  // Calculates the average temperaure for the past t hours
     EEPROM_readAnything(0, schedule);
     int tempAvg = 0;
@@ -160,6 +169,32 @@ int avgTemp(int t) {  // Calculates the average temperaure for the past t hours
     }
     tempAvg = tempAvg / t;
     return tempAvg;
+}
+
+void tempPredict() { //  Predict future temperature and check if it's within an acceptable range for plant tolerance
+    tempF = 0;
+    for (int j = 1; j < 5; j++) { //  Get average of 4 temperature readings from thermistor
+        tempF += (int)Thermister(analogRead(ThermistorPIN)); 
+        delay(25);
+    }
+    tempF = tempF / 4;
+
+    EEPROM_readAnything(0, schedule);
+    if (tempF < 60 &&
+        tempF < (schedule.tempHist[1] + schedule.tempHist[2] + schedule.tempHist[3]) / 3)
+    {
+        if (tempF < 37 ||
+	        ((tempF < schedule.tempHist[2] < schedule.tempHist[4]) &&
+		     (tempF - (((schedule.tempHist[3] - schedule.tempHist[2]) + (schedule.tempHist[2] -
+			  schedule.tempHist[1])) / 2) * 4 < 35)) || 
+		    ((tempF < avgTemp(3)) && (tempF - (2 * (avgTemp(3) - tempF)) < 35)))
+        {
+            tempOK = false;
+        }
+        else tempOK = true;
+    }
+    else tempOK = true;
+    EEPROM_writeAnything(0, schedule);
 }
 
 void setDateDs1307(byte second,        // 0-59
@@ -222,7 +257,7 @@ void rotary_encoder() {  // Read change in rotary encoder or push-button
     }
     if (rotaryLast != rotary && menu[0] != 8) {  // If rotary changes, update menu
         if (menu[0] == 12) {  // Show temperature history
-	        if (qe1Move == '>') {
+	        if (qe1Move == '<') {
 	            if (tempHistS < 23) tempHistS++;
 		        else tempHistS = 0;
 	        }
@@ -536,7 +571,7 @@ void rotary_encoder() {  // Read change in rotary encoder or push-button
 	        case 9:
 	        case 10:
 			case 11:
-			case 12:  // On change pump, valve, schedule
+			case 12:  // On change pumpOR, valveOR, schedule
 	            rotary = 1;
 	            blink_timer[0] = lWaitMillis;
 	            menu[0] = 8;
@@ -715,9 +750,9 @@ void seg_display() { // Update the 7-segment display
 	            mySerialPort.print(schedule.nextday3TOwater);
 	        }
             break;
-        case 8:  // Display current time and temperature
+        case 8:  // Display current time and temperature or emergency mode
             if (schedule.emergency != 0) {
-	            if (schedule.emergency == 1) mySerialPort.print("-E-1"); // Emergency 1 shutdown
+	            if (schedule.emergency == 1) mySerialPort.print("-E-1");      // Emergency 1 shutdown
 	            else if (schedule.emergency == 2) mySerialPort.print("-E-2"); // Emergency 2 shutdown
 	            else if (schedule.emergency == 3) mySerialPort.print("-E-3"); // Emergency 3 shutdown
             }
@@ -739,7 +774,7 @@ void seg_display() { // Update the 7-segment display
 	                mySerialPort.print("v");  // Reset display module
 	                blink_timer[1] = 0;
 	            }
-	            else if (rain > 1020 &&
+	            else if (rain > 900 &&
 				         lWaitMillis - blink_timer[0] >= 5000 &&
 						 lWaitMillis - blink_timer[0] <= 9000)
 				{
@@ -755,8 +790,8 @@ void seg_display() { // Update the 7-segment display
 	                if (tempF < 0 && tempF > -10) mySerialPort.print("x");
 	                mySerialPort.print(tempF);
 	                mySerialPort.print("F");
-	                if ((lWaitMillis - blink_timer[0] > 15000 && rain > 1020) ||
-		                (lWaitMillis - blink_timer[0] > 9000 && rain < 1020))
+	                if ((lWaitMillis - blink_timer[0] > 15000 && rain > 900) ||
+		                (lWaitMillis - blink_timer[0] > 9000 && rain < 900))
 	                {
 	                    blink_timer[0] = lWaitMillis;
 	                    blink_timer[1] = 1;
@@ -782,8 +817,15 @@ void seg_display() { // Update the 7-segment display
 	            mySerialPort.print(schedule.tempHist[tempHistS]);
 	        }
 	        else {
-	            mySerialPort.print(tempHistS);
-	            if (tempHistS < 10) mySerialPort.print(" ");
+			    if ((int)hour - tempHistS >= 0) {
+				    if (tempHistS == 0) mySerialPort.print("P");
+					else mySerialPort.print((int)hour - tempHistS);
+					if ((int)hour - tempHistS < 10 || tempHistS == 0) mySerialPort.print(" ");
+				}
+				else {
+				    mySerialPort.print(24 - (tempHistS - (int)hour));
+	                if (24 - (tempHistS - (int)hour) < 10) mySerialPort.print(" ");
+				}
 	            if (schedule.tempHist[tempHistS] < 10) mySerialPort.print(" ");
 	            mySerialPort.print(schedule.tempHist[tempHistS]);
 	        }
@@ -872,7 +914,7 @@ void relay_control() { // Turn relays On/Off
   
     if (tempOK &&
         schedule.emergency == 0 &&
-        rain < 1020 &&
+        rain < 900 &&
         pressure_timer == 0 &&
 	    (schedule.pumpOR == 1 || schedule.onoff) &&
 	    (schedule.pumpOR == 1 || (schedule.pumptrigger && schedule.pumpOR == 3)))
@@ -880,50 +922,15 @@ void relay_control() { // Turn relays On/Off
         digitalWrite(pump_RelayPin, HIGH);
         pressure_timer = lWaitMillis;
     }
-    else if (pump_RelayPin == HIGH &&
-	         (schedule.pumpOR == 0 ||
-              (!schedule.pumptrigger && schedule.pumpOR == 3)))
+    else if (schedule.emergency != 0 ||
+	         (digitalRead(pump_RelayPin) == HIGH &&
+	          (schedule.pumpOR == 0 || (!schedule.pumptrigger && schedule.pumpOR == 3))))
     {
 	    digitalWrite(pump_RelayPin, LOW);
 	    pressure_timer = 0;
 	    schedule.pumptrigger = false;
 	    EEPROM_writeAnything(0, schedule);
     }
-}
-
-void rainSense() { //  Predict future temperature and check if it's within an acceptable range for plant tolerance
-    rain = 0;
-    for (int j = 1; j < 7; j++) { //  Get average of 6 rain sensor readings
-        rain += (int)analogRead(RainPIN); 
-        delay(25);
-    }
-    rain = rain / 6;
-}
-
-void tempPredict() { //  Predict future temperature and check if it's within an acceptable range for plant tolerance
-    tempF = 0;
-    for (int j = 1; j < 5; j++) { //  Get average of 4 temperature readings from thermistor
-        tempF += (int)Thermister(analogRead(ThermistorPIN)); 
-        delay(25);
-    }
-    tempF = tempF / 4;
-
-    EEPROM_readAnything(0, schedule);
-    if (tempF < 60 &&
-        tempF < (schedule.tempHist[1] + schedule.tempHist[2] + schedule.tempHist[3]) / 3)
-    {
-        if (tempF < 37 ||
-	        ((tempF < schedule.tempHist[2] < schedule.tempHist[4]) &&
-		     (tempF - (((schedule.tempHist[3] - schedule.tempHist[2]) + (schedule.tempHist[2] -
-			  schedule.tempHist[1])) / 2) * 4 < 35)) || 
-		    ((tempF < avgTemp(3)) && (tempF - (2 * (avgTemp(3) - tempF)) < 35)))
-        {
-            tempOK = false;
-        }
-        else tempOK = true;
-    }
-    else tempOK = true;
-    EEPROM_writeAnything(0, schedule);
 }
 
 void status() { // Send debug messages to serial terminal
@@ -1046,14 +1053,14 @@ void loop() {
     rotary_encoder();  //  Act if rotary encoder or push button used
     seg_display();     //  Output to 7-segment display
   
-    if ((long)(millis() - lWaitMillis) >= 0) {     //  Perform once per second to improve responsiveness
-        lWaitMillis += 1000;                         //  For timer setting/counting
-        getDateDs1307();                             //  Get time from RTC
-        relay_control();                             //  Check if Pump/Valve relays should be ON/OFF
+    if ((long)(millis() - lWaitMillis) >= 0) { //  Perform once per second to improve responsiveness
+        lWaitMillis += 1000;                   //  For timer setting/counting
+        getDateDs1307();                       //  Get time from RTC
+        relay_control();                       //  Check if Pump/Valve relays should be ON/OFF
   
-        if ((int)minute == 0 && (int)second == 0) {  //  Every hour:
-            tempPredict();                             //  Obtain temperature & add to an array for history storage (24 hours)
-	        rainSense();                               //  Check if it's rainng/been raining
+        if ((int)minute == 0 && (int)second == 0) { //  Every hour:
+            tempPredict();                          //  Obtain temperature & add to an array for history storage (24 hours)
+	        rainSense();                            //  Check if it's rainng/been raining
 	        for (int i = 23; i > 0; i--) schedule.tempHist[i] = schedule.tempHist[i-1];
 	        schedule.tempHist[0] = tempF;
 	        EEPROM_writeAnything(0, schedule);
@@ -1079,7 +1086,7 @@ void loop() {
 	            valve_timer = lWaitMillis;
 		        valve_timer_act = 1;
             }
-            if (lWaitMillis - valve_timer > 15000) {  //  If valve has been open > 15 seconds, emergency shut down
+            if (lWaitMillis - valve_timer > 15000) { //  If valve has been open > 15 seconds, emergency shut down
                 schedule.emergency = 1;
 	            schedule.pumptrigger = false;
 	            menu[0] = 8;
@@ -1104,8 +1111,8 @@ void loop() {
     }
 
     if (digitalRead(pump_RelayPin) == HIGH &&
-        (analogRead(pressureswitchPin)+analogRead(pressureswitchPin))/2 < 840 &&
-	     lWaitMillis - pressure_timer > 500)
+        (analogRead(pressureswitchPin)+analogRead(pressureswitchPin))/2 < 845 &&
+	     lWaitMillis - pressure_timer > 750)
     {
 	    schedule.emergency = 2;
 	    schedule.pumptrigger = false;
